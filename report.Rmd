@@ -1,0 +1,307 @@
+---
+title: 'Data Task: Spatial Mobility in the NLSY79'
+author: "Yu Hui"
+date: "2024-08-23"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(width = 50)
+library(dplyr)
+library(purrr)
+library(stargazer)
+```
+
+## 1. Summary Statistics
+
+Report the count of moves across U.S. regions for each possible transition. Report the
+count of moves between urban and non-urban areas. Report mean wage income, mean
+employment, and mean educational attainment in each region and urban/non-urban
+bin. Comment on differences you might find.
+
+### 1.1 Load Data
+
+```{r}
+df <- read.csv("nlsy79-prepared.csv")
+head(df,5)
+```
+### 1.2 Count the moves for each possible transition pairs
+
+```{r}
+df_new <- df %>%
+  group_by(i) %>%
+  arrange(year) %>%
+  mutate(region = zoo::na.locf(region, na.rm = FALSE),
+         urban = zoo::na.locf(urban, na.rm = FALSE)) %>%
+  ungroup()
+
+df_new <- df_new %>%
+  group_by(i) %>%
+  arrange(year) %>%
+  mutate(region_lag = lag(region),
+         urban_lag = lag(urban)) %>%
+  ungroup()
+
+# Count transitions between regions
+region_moves <- table(df_new$region_lag, df_new$region, useNA = "no")
+print(region_moves)
+```
+```{r}
+# Count transitions between urban and non-urban areas
+urban_moves <- table(df_new$urban_lag, df_new$urban, useNA = "no")
+print(urban_moves)
+```
+### 1.3 Summary statistics for wage, income and education
+```{r}
+# Define employment as non-null wages
+df$employed <- ifelse(!is.na(df$wage), 1, 0)
+# Group by region and urban status to calculate summary statistics
+summary_stats <- df %>%
+  group_by(region, urban) %>%
+  summarise(mean_wage = mean(wage, na.rm = TRUE),
+            mean_employment = mean(employed, na.rm = TRUE),
+            mean_education = mean(educ, na.rm = TRUE))
+
+knitr::kable(summary_stats)
+```
+```{r}
+# Define employment as non-null wages
+df$employed <- ifelse(!is.na(df$wage), 1, 0)
+summary_stats_r <- df %>%
+  group_by(region) %>%
+  summarise(mean_wage = mean(wage, na.rm = TRUE),
+            mean_employment = mean(employed, na.rm = TRUE),
+            mean_education = mean(educ, na.rm = TRUE))
+knitr::kable(summary_stats_r)
+```
+```{r}
+# Define employment as non-null wages
+df$employed <- ifelse(!is.na(df$wage), 1, 0)
+summary_stats_u <- df %>%
+  group_by(urban) %>%
+  summarise(mean_wage = mean(wage, na.rm = TRUE),
+            mean_employment = mean(employed, na.rm = TRUE),
+            mean_education = mean(educ, na.rm = TRUE))
+knitr::kable(summary_stats_u)
+```
+
+### 1.4 Comments
+Mean Wage Income:
+
+Region 1 (Northeast) shows the highest income among four regions. Urban areas generally have higher mean wage incomes compared to non-urban areas across most regions. 
+Region 1 shows a noticeable difference in mean wages between urban and non-urban areas, with urban areas having higher wages.
+The wage income for the missing data in urbanization status (coded as 2.0) in Region 1(Northeast) is particularly high, which could indicate a data quality issue or a specific subgroup.
+
+Mean Employment:
+
+Region 1 (Northeast) shows the employment rate income among four regions. Employment rates are generally higher in urban areas across all regions, indicating better job opportunities or labor market conditions in urban settings.
+Region 2(North Central) shows the highest mean employment rate in urban areas, with over 72% of individuals employed.
+
+Mean Educational Attainment:
+
+Educational attainment is relatively consistent across regions, with minor differences between urban and non-urban areas.
+In Region 1, non-urban areas show slightly higher educational attainment compared to urban areas, which is somewhat counterintuitive and might warrant further investigation.
+
+## 2. Summarizing Data with Linear Regression
+### 1)
+#### 1.1)
+```{r}
+# Create the indicator variable for the two groups of interest
+df.2 <- df%>%
+  mutate(group_indicator = ifelse(race == 3 & gender == 2 & urban == 1 & region == 2 & year >= 2004 & year <= 2012 , 1,
+                                  ifelse((race == 1 | race == 2) & gender == 1 & urban == 0 & region != 2 & year >= 2004 & year <= 2012, 0, NA)))
+
+# Run the linear regression
+model <- lm(wage ~ group_indicator, data=df.2)
+
+# Summary of the model to get the coefficient and standard error
+stargazer(model, type = "text")
+```
+
+Compare with the group b) (indvidual with race-1-or-2 gender-1 non-urban workers who reside anywhere outside region 2) group a) 's wage is 6114.31 dollars lower. The standard error is 1155.7.
+
+
+### 2)
+```{r}
+df_reg <- df %>%
+  mutate(group_indicator = ifelse(race == 2 & gender == 1 & urban == 0 & region == 3 & educ <=12 & educ >= 9, 1, 0 ))
+
+# Run the linear regression
+model <- lm(wage ~ group_indicator -1, data = df_reg)
+
+# Summary of the model to get the coefficient and standard error
+stargazer(model, type = "text")
+```
+Average wage for "race-2 gender-1 non-urban workers in region 3 with an educational attainment in the 9-12 range" is 13246 dollars.
+
+### 3)
+```{r}
+library(dplyr)
+
+# Create the indicator variable for the two groups of interest
+df.3 <- df %>%
+  mutate(group_indicator = ifelse(race == 1 & gender == 1 & region == 2 & birth == 62, 1,
+                                  ifelse(urban == 1 & region == 3 & educ >= 13 & educ <= 16 & year == 2006, 0, NA)))
+
+# Run the linear regression
+model <- lm(wage ~ group_indicator, data = df.3)
+
+# Summary of the model to get the coefficient and standard error
+stargazer(model, type = "text")
+```
+Compare with the group b), group a) 's wage is 23248 dollars lower. The standard error is 3712.
+
+## 3. Event Study
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# Step 1: Identify Movers
+# Create lagged variables to identify changes in region and urban status
+df.3 <- df %>%
+  group_by(i) %>%
+  arrange(year) %>%
+  mutate(region_lag = lag(region),
+         urban_lag = lag(urban),
+         move_region = ifelse(region != region_lag & !is.na(region_lag), 1, 0),
+         move_urban = ifelse(urban != urban_lag & !is.na(urban_lag), 1, 0),
+         move = ifelse(move_region == 1 | move_urban == 1, 1, 0),
+         move_year = ifelse(move == 1, year, NA)) %>%
+  fill(move_year, .direction = "downup") %>%
+  mutate(relative_time = year - move_year) %>%
+  filter(relative_time >= -2 & relative_time <= 2)
+
+```
+
+```{r}
+df.3 <- df.3 %>%
+  group_by(i) %>%
+  mutate(moved_any_year_region = ifelse(any(move_region == 1), 1, 0),
+         moved_any_year_urban = ifelse(any(move_urban == 1), 1, 0)) %>%
+  ungroup()
+```
+
+
+```{r}
+# Step 2: Calculate Mean Wage Income by Relative Time for Regional Moves
+mean_wage_by_time_region <- df.3 %>%
+  group_by(relative_time) %>%
+  filter(moved_any_year_region == 1) %>%
+  summarise(mean_wage = mean(wage, na.rm = TRUE))
+
+```
+
+```{r}
+# Step 3: Plot the Results for Regional Moves
+ggplot(mean_wage_by_time_region, aes(x = relative_time, y = mean_wage)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Event Study: Mean Wage Income Around Regional Moves",
+       x = "Years Relative to Move",
+       y = "Mean Wage Income") +
+  theme_minimal()
+```
+Interpretation:
+
+Pre-Move Period (-2 to -1): The mean wage income decreases from -2 to -1, indicating that the period just before the move might be associated with lower wages, possibly due to job insecurity or other factors related to preparing for the move.
+At the Time of the Move (0): There's a significant increase in wage income at the time of the move, which could suggest that moving regions is associated with securing higher-paying jobs or better opportunities.
+Post-Move Period (1 to 2): After the move, the wage income fluctuates slightly but generally remains higher compared to the pre-move period, especially at +2 years, where the income is at its peak. This trend suggests that the move had a positive long-term effect on wages.
+
+```{r}
+# Step 4: Calculate Mean Wage Income by Relative Time for Urban Moves
+mean_wage_by_time_urban <- df.3 %>%
+  filter(moved_any_year_urban == 1) %>%
+  group_by(relative_time) %>%
+  summarise(mean_wage = mean(wage, na.rm = TRUE))
+
+# Step 5: Plot the Results for Urban Moves
+ggplot(mean_wage_by_time_urban, aes(x = relative_time, y = mean_wage)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Event Study: Mean Wage Income Around Urban Moves",
+       x = "Years Relative to Move",
+       y = "Mean Wage Income") +
+  theme_minimal()
+```
+ Pre-Move Period (-2 to -1): Similar to regional moves, there's a noticeable decrease in wage income from -2 to -1, potentially indicating challenges or disruptions faced before moving to a new urban environment.
+At the Time of the Move (0): The wage income significantly increases at the time of the move, reflecting the potential benefits of relocating to a different urban setting, such as better job opportunities or increased demand for certain skills.
+Post-Move Period (1 to 2): Post-move, the income briefly dips at +1 year but then rises sharply by +2 years, indicating a delayed but substantial benefit from moving to a new urban area.
+ 
+ ## 4. Comparing movers to stayers
+```{r}
+library(dplyr)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+
+# Step 1: Identify Movers and Stayers
+# Create an indicator for movers
+df.4 <- df %>%
+  group_by(i) %>%
+  arrange(year) %>%
+  mutate(region_lag = lag(region),
+         urban_lag = lag(urban),
+         move_region = ifelse(region != region_lag & !is.na(region_lag), 1, 0),
+         move_urban = ifelse(urban != urban_lag & !is.na(urban_lag), 1, 0),
+         move = ifelse(move_region == 1 | move_urban == 1, 1, 0),
+         move_year = ifelse(move == 1, year, NA)) %>%
+  fill(move_year, .direction = "downup") %>%
+  mutate(relative_time = year - move_year)
+  
+df.4 <- df.4 %>%
+  group_by(i) %>%
+  mutate(moved_any_year = ifelse(any(move_region == 1), 1, 0)) %>%
+  ungroup()
+# transform age var
+df.4<- df.4%>% mutate(age = 2024-1900+birth)
+# Create a new column for the original region of each moved individual
+df.4 <- df.4 %>%
+  group_by(i) %>%
+  mutate(original_region = first(region)) %>%
+  ungroup()
+# Create a column for the last region of each moved inidvidual
+df.4 <- df.4 %>%
+  group_by(i) %>%
+  mutate(last_region =last(region)) %>%
+  ungroup()
+# Step 2: Create the Relative Time Variable (Already done in previous steps)
+
+```
+ 
+```{r}
+# Step 3: Run Regression Models
+# a) Origin Region
+# Regression to compare wage income in the origin region
+model_origin <- lm(wage ~ moved_any_year * factor(original_region) + age + educ + race + gender, data = df.4)
+summary_origin <- summary(model_origin)
+stargazer(model_origin, type = "text")
+```
+
+```{r}
+
+# b) Destination Region
+# Regression to compare wage income in the destination region
+model_destination <- lm(wage ~ moved_any_year * factor(last_region) + age + educ + race + gender, data = df.4)
+summary_destination <- summary(model_destination)
+stargazer(model_destination, type = "text")
+```
+Original region stayer and mover comparison: What can we learned from the regression is that movers, on average, earn $5680.8 less than stayers in the origin region, controlling for other factors. This negative coefficient suggests that movers might experience a decrease in wages when initially moving from their origin region. When we look into interaction terms, we can see Region 2 (3884.1): Movers from Region 2 earn 3884.1 more than movers from Region 1, but still less than stayers in Region 1 (considering the negative main effect of moved_any_year). The result is significant at 1%.
+Region 3 (2956.4): Similar to Region 2, movers from Region 3 earn more than those from Region 1 but less than stayers. The result is also significant at 1%.
+Region 4 (691.6): The difference is not statistically significant (p-value = 0.480226), indicating no strong evidence of a wage difference for movers from Region 4 compared to Region 1.
+
+Destination region stayer and mover comparison: What we can see for the distination region is that the coefficient before moving indicator is positive but small and not statistically significant (p-value = 0.8631), suggesting that there is no significant difference in wages between movers and stayers in the destination region on average.
+Region 2 (-2288.7): Movers to Region 2 earn $2288.7 less than stayers in Region 1, but this effect is marginally significant (p-value = 0.0678).
+Region 3 (-449.1): The difference is not statistically significant (p-value = 0.6940), indicating no strong evidence of a wage difference for movers to Region 3 compared to Region 1.
+Region 4 (1076.1): The difference is not statistically significant (p-value = 0.4059), indicating no strong evidence of a wage difference for movers to Region 4 compared to Region 1.
+
+
+```{r}
+# b) Destination Region
+# Regression to compare wage income in the destination region
+model_destination <- lm(wage ~ moved_any_year * factor(original_region)*relative_time + age + educ + race + gender, data = df.4)
+summary_destination <- summary(model_destination)
+summary_destination
+```
+running out of time but plan to do some hetergenity analysis on different time periods relative to the move. Already create the relative_time variable for analysis.
